@@ -1,5 +1,5 @@
-#ifndef _UTL_H_
-#define _UTL_H_
+#ifndef __UTL_H__
+#define __UTL_H__
 
 #include "pipe/p_state.h"
 #include "pipe/p_context.h"
@@ -32,4 +32,4 @@ int utl_window_attach_surface(utl_window_t *window,
 
 int utl_window_nextevent     (utl_window_t *window);
 
-#endif /* _UTL_H_ */
+#endif /* __UTL_H__ */
