@@ -20,28 +20,31 @@ int draw(galt_handler_t *hdl,  galt_context_t *ctx, int32_t ww, int32_t wh)
     void   *vs;
     void   *fs;
 
-
     /* set clear color */
-    clear_color.f[0] = 0.3;
-    clear_color.f[1] = 0.1;
-    clear_color.f[2] = 0.3;
+    clear_color.f[0] = 0.5;
+    clear_color.f[1] = 0.5;
+    clear_color.f[2] = 0.5;
     clear_color.f[3] = 1.0;
 
     /* vertex buffer */
     {
         float vertices[4][2][4] = {
-            {
-                { 0.0f, -0.9f, 0.0f, 1.0f },
-                { 1.0f, 0.0f, 0.0f, 1.0f }
-            },
-            {
-                { -0.9f, 0.9f, 0.0f, 1.0f },
-                { 0.0f, 1.0f, 0.0f, 1.0f }
-            },
-            {
-                { 0.9f, 0.9f, 0.0f, 1.0f },
-                { 0.0f, 0.0f, 1.0f, 1.0f }
-            }
+                {
+                    { 0.8f, 0.8f, 0.0f, 1.0f },
+                    { 1.0f, 1.0f, 0.0f, 1.0f }
+                },
+                {
+                    { -0.8f, 0.8f, 0.0f, 1.0f },
+                    {  1.0f, 1.0f, 0.0f, 1.0f }
+                },
+                {
+                    { -0.8f, -0.8f, 0.0f, 1.0f },
+                    {  1.0f,  1.0f, 0.0f, 1.0f }
+                },
+                {
+                    { 0.8f, -0.8f, 0.0f, 1.0f },
+                    { 1.0f,  1.0f, 0.0f, 1.0f }
+                }
         };
 
         vbuf = pipe_buffer_create(ctx->pipe->screen, PIPE_BIND_VERTEX_BUFFER,
@@ -138,27 +141,19 @@ int draw(galt_handler_t *hdl,  galt_context_t *ctx, int32_t ww, int32_t wh)
 
     util_draw_vertex_buffer(ctx->pipe, ctx->cso,
                             vbuf, 0, 0,
-                            PIPE_PRIM_TRIANGLES,
-                            3,  /* verts */
+                            PIPE_PRIM_QUADS,
+                            4,  /* verts */
                             2); /* attribs/vert */
 
 
     ctx->pipe->flush(ctx->pipe, NULL, 0);
 
+    //cso_release_all(ctx->cso);
 
-    //hdl->dri2.swap_c = xcb_dri2_swap_buffers_unchecked(hdl->dri2.conn, hdl->dri2.drawable, 0, 0, 0, 0, 0, 0);
-    //free(xcb_dri2_swap_buffers_reply(hdl->dri2.conn, hdl->dri2.swap_c, NULL));
+    cso_delete_fragment_shader(ctx->cso, fs);
+    cso_delete_vertex_shader(ctx->cso, vs);
 
-
-    //cso_release_all(hdl->gallium.cso);
-
-    //hdl->gallium.pipe->delete_fs_state(hdl->gallium.pipe, fs);
-    //hdl->gallium.pipe->delete_vs_state(hdl->gallium.pipe, vs);
-
-    //pipe_surface_reference(&framebuffer.cbufs[0], NULL);
-    //pipe_resource_reference(&target, NULL);
-    //pipe_resource_reference(&vbuf, NULL);
-
+    pipe_resource_reference(&vbuf, NULL);
 }
 
 
