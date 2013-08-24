@@ -250,8 +250,8 @@ int __dri2_attach_drawable(struct galt_handler_dri2_s *dri2, Drawable drawable)
        return -1;
     }
 
-    dri2->swap_c = xcb_dri2_swap_buffers_unchecked(dri2->conn, dri2->drawable, 0, 0, 0, 0, 0, 0);
-    free(xcb_dri2_swap_buffers_reply(dri2->conn, dri2->swap_c, NULL));
+    //dri2->swap_c = xcb_dri2_swap_buffers_unchecked(dri2->conn, dri2->drawable, 0, 0, 0, 0, 0, 0);
+    //free(xcb_dri2_swap_buffers_reply(dri2->conn, dri2->swap_c, NULL));
 
     return 0;
 }
@@ -293,6 +293,7 @@ void __dri2_flush_frontbuffer(struct pipe_screen *screen,
                               unsigned level, unsigned layer,
                               void *context_private)
 {
+printf("__dri2_flush_frontbuffer");
    struct galt_handler_dri2_s *dri2 = context_private;
    uint32_t msc_hi, msc_lo;
 
@@ -395,8 +396,13 @@ void __xevent_expose(galt_handler_t *hdl)
     hdl->events.event_window(hdl, &ctx, hdl->xlib.w_width, hdl->xlib.w_height);
 
     pipe_surface_release(hdl->gallium.pipe, &framebuffer.cbufs[0]);
-    //hdl->gallium.screen->resource_destroy(hdl->gallium.screen, target);
+    pipe_resource_reference(&target, NULL);
 
+    hdl->dri2.swap_c = xcb_dri2_swap_buffers_unchecked(hdl->dri2.conn, hdl->dri2.drawable, 0, 0, 0, 0, 0, 0);
+    hdl->dri2.wait_c    = xcb_dri2_wait_sbc_unchecked(hdl->dri2.conn, hdl->dri2.drawable, 0, 0);
+    free(xcb_dri2_swap_buffers_reply(hdl->dri2.conn, hdl->dri2.swap_c, NULL));
+    free(xcb_dri2_wait_sbc_reply(hdl->dri2.conn, hdl->dri2.wait_c, NULL));
+    XSync(hdl->xlib.display, False);
 }
 
 int   galt_open_window(galt_window_t  *window)
