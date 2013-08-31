@@ -160,6 +160,7 @@ int main()
 
     gwin->w_height = 300;
     gwin->w_width  = 300;
+    gwin->w_name   = "growth";
     gwin->event_window = draw;
 
     gwin->t_delay = 1.0 / 60;

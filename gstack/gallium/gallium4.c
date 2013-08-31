@@ -163,6 +163,7 @@ int main()
 
     gwin->w_height = 300;
     gwin->w_width  = 300;
+    gwin->w_name   = "galtdemo";
     gwin->event_window = draw;
 
     galt_open_window(gwin);

@@ -58,6 +58,7 @@ struct galt_handler_s
     struct galt_handler_timer_s
     {
         timer_t  tmid;
+        int      tmstatus;
         double   delay;
         uint64_t counter;
     } timer;
@@ -258,12 +259,10 @@ int __gallium_free(struct galt_handler_gallium_s *ga)
     return 0;
 }
 
-
-static galt_handler_t *handler;
-
-void __timer_handle(int signum)
+void __timer_handle(int sig, siginfo_t *si, void *ucontext)
 {
-    handler->timer.counter++;
+    galt_handler_t *hdl = si->si_ptr;
+    hdl->timer.counter++;
 }
 
 
@@ -274,23 +273,38 @@ void *galt_get_udata  (galt_handler_t *hdl)
 
 int   galt_set_timer  (galt_handler_t *hdl, double seconds)
 {
-    double ipart, fpart;
-    struct itimerval tmval;
+    if (hdl->timer.tmstatus == 0)
+    {
+        struct sigevent  sigev;
+        sigev.sigev_notify = SIGEV_SIGNAL;
+        sigev.sigev_signo  = SIGALRM;
+        sigev.sigev_value.sival_ptr = hdl;
+        timer_create(CLOCK_REALTIME, &sigev, &hdl->timer.tmid);
 
-    signal(SIGALRM, __timer_handle);
+        struct sigaction sigact;
+        sigact.sa_flags = SA_SIGINFO;
+        sigemptyset(&sigact.sa_mask);
+        sigact.sa_sigaction = __timer_handle;
+        sigaction(SIGALRM, &sigact, NULL);
+
+        hdl->timer.tmstatus = 1;
+    }
+
+    double ipart, fpart;
+    struct itimerspec tmval;
 
     fpart = modf(seconds, &ipart);
     tmval.it_value.tv_sec  = (uint64_t)ipart;
-    fpart = modf(fpart * 1000000, &ipart);
-    tmval.it_value.tv_usec = (uint64_t)ipart;
+    fpart = modf(fpart * 1000000000, &ipart);
+    tmval.it_value.tv_nsec = (uint64_t)ipart;
     tmval.it_interval = tmval.it_value;
 
-    handler = hdl;
-    setitimer(ITIMER_REAL, &tmval, NULL);
+    timer_settime(hdl->timer.tmid, 0, &tmval, NULL);
+
     return 0;
 }
 
-int   galt_redraw     (galt_handler_t *hdl)
+int   galt_redraw  (galt_handler_t *hdl)
 {
     Window     wnoop;
     static int w_width = -1, w_height = -1;
@@ -371,7 +385,7 @@ int   galt_redraw     (galt_handler_t *hdl)
     }
 
     hdl->dri2.swap_c = xcb_dri2_swap_buffers_unchecked(hdl->dri2.conn, hdl->dri2.drawable, 0, 0, 0, 0, 0, 0);
-    hdl->dri2.wait_c    = xcb_dri2_wait_sbc_unchecked(hdl->dri2.conn, hdl->dri2.drawable, 0, 0);
+    hdl->dri2.wait_c = xcb_dri2_wait_sbc_unchecked(hdl->dri2.conn, hdl->dri2.drawable, 0, 0);
     free(xcb_dri2_swap_buffers_reply(hdl->dri2.conn, hdl->dri2.swap_c, NULL));
     free(xcb_dri2_wait_sbc_reply(hdl->dri2.conn, hdl->dri2.wait_c, NULL));
 
@@ -401,6 +415,8 @@ int   galt_open_window(galt_window_t  *window)
                         0,
                         BlackPixel(hdl->xlib.display, hdl->xlib.nscreen),
                         WhitePixel(hdl->xlib.display, hdl->xlib.nscreen));
+    if (hdl->xlib.w_name != NULL)
+        XStoreName(hdl->xlib.display, hdl->xlib.win, hdl->xlib.w_name);
 
     ret = __dri2_connect(&hdl->dri2, hdl->xlib.display, hdl->xlib.nscreen);
     if (ret != 0)
@@ -415,8 +431,6 @@ int   galt_open_window(galt_window_t  *window)
 
     if (window->t_delay != 0)
         galt_set_timer(hdl, window->t_delay);
-
-    handler = hdl;
 
     while (1)
     {
@@ -448,11 +462,11 @@ int   galt_open_window(galt_window_t  *window)
         }
 
         select(hdl->xlib.socket+1, &in_fds, 0, 0, &tmval);
-        while (handler->timer.counter > 0)
+        while (hdl->timer.counter > 0)
         {
-            if (handler->events.event_timer != NULL)
-                handler->events.event_timer(handler);
-            handler->timer.counter=0;
+            if (hdl->events.event_timer != NULL)
+                hdl->events.event_timer(hdl);
+            hdl->timer.counter=0;
         }
 
     }
