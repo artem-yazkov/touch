@@ -1,6 +1,8 @@
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <sys/time.h>
 
 #include <xcb/xcb.h>
 #include <xcb/xproto.h>
@@ -17,6 +19,7 @@ struct galt_handler_s
     struct galt_handler_xlib_s
     {
         Display* display;
+        int      socket;
         int      nscreen;
         Window   win;
         XEvent   event;
@@ -54,7 +57,8 @@ struct galt_handler_s
 
     struct galt_handler_timer_s
     {
-        int32_t  delay;
+        timer_t  tmid;
+        double   delay;
         uint64_t counter;
     } timer;
 
@@ -66,30 +70,17 @@ struct galt_handler_s
         struct cso_context        *cso;
     } gallium;
 
-    void *userdata;
+    void    *userdata;
 };
 
 static const uint32_t attachments[1] = { XCB_DRI2_ATTACHMENT_BUFFER_BACK_LEFT };
-
-void __dri2_flush_frontbuffer(struct pipe_screen *screen,
-                              struct pipe_resource *resource,
-                              unsigned level, unsigned layer,
-                              void *context_private);
-
-xcb_dri2_get_buffers_reply_t*
-__dri2_get_flush_reply(struct galt_handler_dri2_s *dri2);
-
-void __dri2_handle_stamps (struct galt_handler_dri2_s *dri2,
-                           uint32_t ust_hi, uint32_t ust_lo,
-                           uint32_t msc_hi, uint32_t msc_lo);
-
 
 int __handler_init(galt_handler_t **hdl, galt_window_t  *window)
 {
     *hdl = calloc(1, sizeof(galt_handler_t));
 
     (*hdl)->userdata    = window->udata;
-    (*hdl)->timer.delay = window->timer;
+    (*hdl)->timer.delay = window->t_delay;
 
     (*hdl)->events.event_key    = window->event_key;
     (*hdl)->events.event_mouse  = window->event_mouse;
@@ -107,21 +98,9 @@ int __handler_init(galt_handler_t **hdl, galt_window_t  *window)
 
 int __handler_free(galt_handler_t *hdl)
 {
-    free(hdl->xlib.w_name);
+    if (hdl->xlib.w_name != NULL)
+        free(hdl->xlib.w_name);
     free(hdl);
-
-    return 0;
-}
-
-int __gallium_init(struct galt_handler_gallium_s *ga)
-{
-    int ret;
-
-    ret = pipe_loader_probe(&ga->dev, 1);
-    ga->screen = pipe_loader_create_screen(ga->dev, PIPE_SEARCH_DIR);
-    ga->screen->flush_frontbuffer = __dri2_flush_frontbuffer;
-    ga->pipe = ga->screen->context_create(ga->screen, NULL);
-    ga->cso = cso_create_context(ga->pipe);
 
     return 0;
 }
@@ -250,42 +229,7 @@ int __dri2_attach_drawable(struct galt_handler_dri2_s *dri2, Drawable drawable)
        return -1;
     }
 
-    //dri2->swap_c = xcb_dri2_swap_buffers_unchecked(dri2->conn, dri2->drawable, 0, 0, 0, 0, 0, 0);
-    //free(xcb_dri2_swap_buffers_reply(dri2->conn, dri2->swap_c, NULL));
-
     return 0;
-}
-
-void __dri2_handle_stamps (struct galt_handler_dri2_s *dri2,
-                           uint32_t ust_hi, uint32_t ust_lo,
-                           uint32_t msc_hi, uint32_t msc_lo)
-{
-   int64_t ust = ((((uint64_t)ust_hi) << 32) | ust_lo) * 1000;
-   int64_t msc = (((uint64_t)msc_hi) << 32) | msc_lo;
-
-   if (dri2->last_ust && dri2->last_msc && (ust > dri2->last_ust) && (msc > dri2->last_msc))
-      dri2->ns_frame = (ust - dri2->last_ust) / (msc - dri2->last_msc);
-
-   dri2->last_ust = ust;
-   dri2->last_msc = msc;
-}
-
-xcb_dri2_get_buffers_reply_t*
-__dri2_get_flush_reply(struct galt_handler_dri2_s *dri2)
-{
-   xcb_dri2_wait_sbc_reply_t *d2wait_r;
-
-   free(xcb_dri2_swap_buffers_reply(dri2->conn, dri2->swap_c, NULL));
-
-   d2wait_r = xcb_dri2_wait_sbc_reply(dri2->conn, dri2->wait_c, NULL);
-   if (!d2wait_r)
-      return NULL;
-
-   __dri2_handle_stamps(dri2, d2wait_r->ust_hi, d2wait_r->ust_lo,
-           d2wait_r->msc_hi, d2wait_r->msc_lo);
-   free(d2wait_r);
-
-   return xcb_dri2_get_buffers_reply(dri2->conn, dri2->buffers_c, NULL);
 }
 
 void __dri2_flush_frontbuffer(struct pipe_screen *screen,
@@ -293,25 +237,33 @@ void __dri2_flush_frontbuffer(struct pipe_screen *screen,
                               unsigned level, unsigned layer,
                               void *context_private)
 {
-printf("__dri2_flush_frontbuffer");
-   struct galt_handler_dri2_s *dri2 = context_private;
-   uint32_t msc_hi, msc_lo;
+    printf("__dri2_flush_frontbuffer");
+}
 
-   assert(screen);
-   assert(resource);
-   assert(context_private);
+int __gallium_init(struct galt_handler_gallium_s *ga)
+{
+    int ret;
 
-   free(__dri2_get_flush_reply(dri2));
+    ret = pipe_loader_probe(&ga->dev, 1);
+    ga->screen = pipe_loader_create_screen(ga->dev, PIPE_SEARCH_DIR);
+    ga->screen->flush_frontbuffer = __dri2_flush_frontbuffer;
+    ga->pipe = ga->screen->context_create(ga->screen, NULL);
+    ga->cso = cso_create_context(ga->pipe);
 
-   msc_hi = dri2->next_msc >> 32;
-   msc_lo = dri2->next_msc & 0xFFFFFFFF;
+    return 0;
+}
 
-   dri2->swap_c    = xcb_dri2_swap_buffers_unchecked(dri2->conn, dri2->drawable, msc_hi, msc_lo, 0, 0, 0, 0);
-   dri2->wait_c    = xcb_dri2_wait_sbc_unchecked(dri2->conn, dri2->drawable, 0, 0);
-   dri2->buffers_c = xcb_dri2_get_buffers_unchecked(dri2->conn, dri2->drawable, 1, 1, attachments);
+int __gallium_free(struct galt_handler_gallium_s *ga)
+{
+    return 0;
+}
 
-   //dri2->flushed = true;
-   //dri2->current_buffer = !scrn->current_buffer;
+
+static galt_handler_t *handler;
+
+void __timer_handle(int signum)
+{
+    handler->timer.counter++;
 }
 
 
@@ -320,107 +272,127 @@ void *galt_get_udata  (galt_handler_t *hdl)
     return hdl->userdata;
 }
 
-int   galt_set_timer  (galt_handler_t *hdl, int32_t timer)
+int   galt_set_timer  (galt_handler_t *hdl, double seconds)
 {
+    double ipart, fpart;
+    struct itimerval tmval;
+
+    signal(SIGALRM, __timer_handle);
+
+    fpart = modf(seconds, &ipart);
+    tmval.it_value.tv_sec  = (uint64_t)ipart;
+    fpart = modf(fpart * 1000000, &ipart);
+    tmval.it_value.tv_usec = (uint64_t)ipart;
+    tmval.it_interval = tmval.it_value;
+
+    handler = hdl;
+    setitimer(ITIMER_REAL, &tmval, NULL);
     return 0;
 }
 
 int   galt_redraw     (galt_handler_t *hdl)
 {
-    return 0;
-}
-
-void __xevent_expose(galt_handler_t *hdl)
-{
-    Window wnoop;
-    int    noop;
-    const int NEAR = 30;
-    const int FAR  = 1000;
-    const int FLIP = 0;
-
-    printf("expose\n");
+    Window     wnoop;
+    static int w_width = -1, w_height = -1;
+    int        noop;
 
     XGetGeometry(hdl->xlib.display, hdl->xlib.win,
                  &wnoop, &noop, &noop,
                  &hdl->xlib.w_width, &hdl->xlib.w_height,
                  &noop, &noop);
 
-    __dri2_attach_drawable(&hdl->dri2, hdl->xlib.win);
-
-    struct pipe_resource          *target;
-    struct pipe_framebuffer_state  framebuffer;
-    struct pipe_surface            surf_tmpl;
-
-    /* render target texture */
+    if ((hdl->xlib.w_width != w_width) || (hdl->xlib.w_height != w_height))
     {
-        struct winsys_handle dri2_handle;
-        struct pipe_resource tmplt;
+        static struct pipe_resource          *target;
+        static struct pipe_framebuffer_state  framebuffer;
+        static struct pipe_surface            surf_tmpl;
 
-        memset(&dri2_handle, 0, sizeof(dri2_handle));
-        dri2_handle.type = DRM_API_HANDLE_TYPE_SHARED;
-        dri2_handle.handle = hdl->dri2.buffer_left->name;
-        dri2_handle.stride = hdl->dri2.buffer_left->pitch;
+        /* attach a new drawable */
+        __dri2_attach_drawable(&hdl->dri2, hdl->xlib.win);
 
-        memset(&tmplt, 0, sizeof(tmplt));
-        tmplt.target = PIPE_TEXTURE_2D;
-        tmplt.format = PIPE_FORMAT_B8G8R8A8_UNORM; /* All drivers support this */
-        tmplt.width0 = hdl->xlib.w_width;
-        tmplt.height0 = hdl->xlib.w_height;
-        tmplt.depth0 = 1;
-        tmplt.array_size = 1;
-        tmplt.last_level = 0;
-        tmplt.bind = PIPE_BIND_RENDER_TARGET;
+        if (w_width != -1)
+        {
+            /* delete previous fb */
+            pipe_surface_release(hdl->gallium.pipe, &framebuffer.cbufs[0]);
+            pipe_resource_reference(&target, NULL);
+        }
 
-        target = hdl->gallium.screen->resource_from_handle(hdl->gallium.screen, &tmplt, &dri2_handle);
+        /* render target texture */
+        {
+            struct winsys_handle dri2_handle;
+            struct pipe_resource tmplt;
+
+            memset(&dri2_handle, 0, sizeof(dri2_handle));
+            dri2_handle.type = DRM_API_HANDLE_TYPE_SHARED;
+            dri2_handle.handle = hdl->dri2.buffer_left->name;
+            dri2_handle.stride = hdl->dri2.buffer_left->pitch;
+
+            memset(&tmplt, 0, sizeof(tmplt));
+            tmplt.target = PIPE_TEXTURE_2D;
+            tmplt.format = PIPE_FORMAT_B8G8R8A8_UNORM; /* All drivers support this */
+            tmplt.width0 = hdl->xlib.w_width;
+            tmplt.height0 = hdl->xlib.w_height;
+            tmplt.depth0 = 1;
+            tmplt.array_size = 1;
+            tmplt.last_level = 0;
+            tmplt.bind = PIPE_BIND_RENDER_TARGET;
+
+            target = hdl->gallium.screen->resource_from_handle(hdl->gallium.screen, &tmplt, &dri2_handle);
+        }
+
+        surf_tmpl.format = PIPE_FORMAT_B8G8R8A8_UNORM;
+        surf_tmpl.u.tex.level = 0;
+        surf_tmpl.u.tex.first_layer = 0;
+        surf_tmpl.u.tex.last_layer = 0;
+
+        /* drawing destination */
+        memset(&framebuffer, 0, sizeof(framebuffer));
+        framebuffer.width    = hdl->xlib.w_width;
+        framebuffer.height   = hdl->xlib.w_height;
+        framebuffer.nr_cbufs = 1;
+        framebuffer.cbufs[0] = hdl->gallium.pipe->create_surface(hdl->gallium.pipe, target, &surf_tmpl);
+
+        /* set the render target */
+        cso_set_framebuffer(hdl->gallium.cso, &framebuffer);
     }
-
-    surf_tmpl.format = PIPE_FORMAT_B8G8R8A8_UNORM;
-    surf_tmpl.u.tex.level = 0;
-    surf_tmpl.u.tex.first_layer = 0;
-    surf_tmpl.u.tex.last_layer = 0;
-
-    /* drawing destination */
-    memset(&framebuffer, 0, sizeof(framebuffer));
-    framebuffer.width = hdl->xlib.w_width;
-    framebuffer.height = hdl->xlib.w_height;
-    framebuffer.nr_cbufs = 1;
-    framebuffer.cbufs[0] = hdl->gallium.pipe->create_surface(hdl->gallium.pipe, target, &surf_tmpl);
-
-    /* set the render target */
-    cso_set_framebuffer(hdl->gallium.cso, &framebuffer);
 
     galt_context_t ctx;
     ctx.cso  = hdl->gallium.cso;
     ctx.pipe = hdl->gallium.pipe;
 
-    hdl->events.event_window(hdl, &ctx, hdl->xlib.w_width, hdl->xlib.w_height);
+    if (hdl->events.event_window != NULL)
+        hdl->events.event_window(hdl, &ctx, hdl->xlib.w_width, hdl->xlib.w_height);
 
-    pipe_surface_release(hdl->gallium.pipe, &framebuffer.cbufs[0]);
-    pipe_resource_reference(&target, NULL);
+
+    if ((hdl->xlib.w_width != w_width) || (hdl->xlib.w_height != w_height))
+    {
+        w_width = hdl->xlib.w_width;
+        w_height = hdl->xlib.w_height;
+    }
 
     hdl->dri2.swap_c = xcb_dri2_swap_buffers_unchecked(hdl->dri2.conn, hdl->dri2.drawable, 0, 0, 0, 0, 0, 0);
     hdl->dri2.wait_c    = xcb_dri2_wait_sbc_unchecked(hdl->dri2.conn, hdl->dri2.drawable, 0, 0);
     free(xcb_dri2_swap_buffers_reply(hdl->dri2.conn, hdl->dri2.swap_c, NULL));
     free(xcb_dri2_wait_sbc_reply(hdl->dri2.conn, hdl->dri2.wait_c, NULL));
-    XSync(hdl->xlib.display, False);
+
+    return 0;
 }
 
 int   galt_open_window(galt_window_t  *window)
 {
-    galt_handler_t *hdl; /* core handler               */
-    int             ret; /* common purpose return code */
+    galt_handler_t *hdl;
+    int             ret;
 
     __handler_init(&hdl, window);
 
     hdl->xlib.display = XOpenDisplay(getenv("DISPLAY"));
     if (hdl->xlib.display == NULL)
     {
-        __handler_free(hdl);
+        //__handler_free(hdl);
         return -1; // can't open display
     }
-
+    hdl->xlib.socket = ConnectionNumber(hdl->xlib.display);
     hdl->xlib.nscreen = DefaultScreen(hdl->xlib.display);
-
     hdl->xlib.win = XCreateSimpleWindow(
                         hdl->xlib.display,
                         RootWindow(hdl->xlib.display, hdl->xlib.nscreen),
@@ -433,7 +405,7 @@ int   galt_open_window(galt_window_t  *window)
     ret = __dri2_connect(&hdl->dri2, hdl->xlib.display, hdl->xlib.nscreen);
     if (ret != 0)
     {
-        __handler_free(hdl);
+        //__handler_free(hdl);
         return ret;
     }
     __gallium_init(&hdl->gallium);
@@ -441,21 +413,48 @@ int   galt_open_window(galt_window_t  *window)
     XMapWindow(hdl->xlib.display, hdl->xlib.win);
     XSelectInput (hdl->xlib.display, hdl->xlib.win, ExposureMask | KeyPressMask | ButtonPressMask);
 
+    if (window->t_delay != 0)
+        galt_set_timer(hdl, window->t_delay);
+
+    handler = hdl;
+
     while (1)
     {
-        XNextEvent(hdl->xlib.display, &hdl->xlib.event);
-        switch(hdl->xlib.event.type)
+
+        fd_set in_fds;
+        FD_ZERO(&in_fds);
+        FD_SET(hdl->xlib.socket, &in_fds);
+
+        struct timeval tmval;
+        tmval.tv_sec = 10;
+        tmval.tv_usec = 0;
+
+        while(XPending(hdl->xlib.display))
         {
-        case Expose:
-            __xevent_expose(hdl);
-            break;
-        case ButtonPress:
-            printf("button press\n");
-            break;
-        case KeyPress:
-            printf("key press\n");
-            break;
+            XNextEvent(hdl->xlib.display, &hdl->xlib.event);
+            switch(hdl->xlib.event.type)
+            {
+            case Expose:
+                printf("redraw\n");
+                galt_redraw(hdl);
+                break;
+            case ButtonPress:
+                printf("button press\n");
+                break;
+            case KeyPress:
+                printf("key press\n");
+                break;
+            }
         }
+
+        select(hdl->xlib.socket+1, &in_fds, 0, 0, &tmval);
+        while (handler->timer.counter > 0)
+        {
+            if (handler->events.event_timer != NULL)
+                handler->events.event_timer(handler);
+            handler->timer.counter=0;
+        }
+
     }
     return 0;
 }

@@ -57,7 +57,7 @@ typedef struct galt_window_s
     char    *w_name;
     int32_t  w_width;
     int32_t  w_height;
-    int32_t  timer;
+    double   t_delay;
 
     galt_event_window  event_window;
     galt_event_key     event_key;
@@ -68,7 +68,7 @@ typedef struct galt_window_s
 } galt_window_t;
 
 void *galt_get_udata  (galt_handler_t *hdl);
-int   galt_set_timer  (galt_handler_t *hdl, int32_t timer);
+int   galt_set_timer  (galt_handler_t *hdl, double delay);
 int   galt_redraw     (galt_handler_t *hdl);
 int   galt_open_window(galt_window_t  *window);
 
