@@ -24,4 +24,4 @@ all:
 #	gcc $(CFLAGS) -o gallium3  utl.c gallium3.c  $(LDFLAGS) 
 
 	gcc $(CFLAGS) -c -o utl.o  utl.c  $(LDFLAGS) 
-	gcc $(CFLAGS) -o gallium4  utl-galt.c gallium4.c  $(LDFLAGS) 
+	gcc $(CFLAGS) -o gallium5  utl-galt.c gallium5.c  $(LDFLAGS) 
