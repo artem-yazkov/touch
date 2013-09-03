@@ -33,15 +33,18 @@ struct galt_handler_s
     {
         xcb_connection_t                  *conn;
         xcb_dri2_swap_buffers_cookie_t     swap_c;
-        xcb_dri2_wait_sbc_cookie_t         wait_c;
+        xcb_dri2_wait_sbc_cookie_t         wait_sbc_c;
+        xcb_dri2_wait_msc_cookie_t         wait_msc_c;
         xcb_dri2_get_buffers_cookie_t      buffers_c;
         xcb_dri2_dri2_buffer_t            *buffers, *buffer_left;
         xcb_drawable_t                     drawable;
 
-        int64_t     last_ust;
-        int64_t     ns_frame;
-        int64_t     last_msc;
-        int64_t     next_msc;
+        struct galt_handler_dri2_cnt_s
+        {
+            uint64_t msc;
+            uint64_t sbc;
+            uint64_t ust;
+        } cnt;
 
         int         drm_fd;
         drm_magic_t drm_magic;
@@ -230,6 +233,23 @@ int __dri2_attach_drawable(struct galt_handler_dri2_s *dri2, Drawable drawable)
        return -1;
     }
 
+    xcb_dri2_get_msc_cookie_t  d2msc_c;
+    xcb_dri2_get_msc_reply_t  *d2msc_r;
+
+    d2msc_c = xcb_dri2_get_msc_unchecked(dri2->conn, dri2->drawable);
+    d2msc_r = xcb_dri2_get_msc_reply(dri2->conn, d2msc_c, NULL);
+
+    if (d2msc_r == NULL)
+    {
+        fprintf(stderr, "can't get msc\n");
+        return -1;
+    }
+
+    dri2->cnt.msc = (uint64_t)d2msc_r->msc_hi << 32 | d2msc_r->msc_lo;
+    dri2->cnt.sbc = (uint64_t)d2msc_r->sbc_hi << 32 | d2msc_r->sbc_lo;
+    dri2->cnt.ust = (uint64_t)d2msc_r->ust_hi << 32 | d2msc_r->ust_lo;
+    free(d2msc_r);
+
     return 0;
 }
 
@@ -384,10 +404,28 @@ int   galt_redraw  (galt_handler_t *hdl)
         w_height = hdl->xlib.w_height;
     }
 
-    hdl->dri2.swap_c = xcb_dri2_swap_buffers_unchecked(hdl->dri2.conn, hdl->dri2.drawable, 0, 0, 0, 0, 0, 0);
-    hdl->dri2.wait_c = xcb_dri2_wait_sbc_unchecked(hdl->dri2.conn, hdl->dri2.drawable, 0, 0);
-    free(xcb_dri2_swap_buffers_reply(hdl->dri2.conn, hdl->dri2.swap_c, NULL));
-    free(xcb_dri2_wait_sbc_reply(hdl->dri2.conn, hdl->dri2.wait_c, NULL));
+    hdl->dri2.swap_c = xcb_dri2_swap_buffers_unchecked(hdl->dri2.conn,
+                                                       hdl->dri2.drawable,
+                                                       hdl->dri2.cnt.msc >> 32,
+                                                       hdl->dri2.cnt.msc & 0xFFFFFFFF, 0, 0, 0, 0);
+    hdl->dri2.wait_sbc_c = xcb_dri2_wait_sbc_unchecked(hdl->dri2.conn,
+                                                       hdl->dri2.drawable,
+                                                       hdl->dri2.cnt.sbc >> 32,
+                                                       hdl->dri2.cnt.sbc & 0xFFFFFFFF);
+    hdl->dri2.wait_msc_c = xcb_dri2_wait_msc_unchecked(hdl->dri2.conn,
+                                                       hdl->dri2.drawable,
+                                                       hdl->dri2.cnt.msc >> 32,
+                                                       hdl->dri2.cnt.msc & 0xFFFFFFFF, 0, 0, 0, 0);
+
+    xcb_dri2_swap_buffers_reply_t *d2swap_r     = xcb_dri2_swap_buffers_reply(hdl->dri2.conn, hdl->dri2.swap_c, NULL);
+    xcb_dri2_wait_sbc_reply_t     *d2wait_sbc_r = xcb_dri2_wait_sbc_reply(hdl->dri2.conn, hdl->dri2.wait_sbc_c, NULL);
+    xcb_dri2_wait_msc_reply_t     *d2wait_msc_r = xcb_dri2_wait_msc_reply(hdl->dri2.conn, hdl->dri2.wait_msc_c, NULL);
+    hdl->dri2.cnt.msc = (uint64_t)d2wait_msc_r->msc_hi << 32 | d2wait_msc_r->msc_lo;
+    hdl->dri2.cnt.sbc = (uint64_t)d2wait_msc_r->sbc_hi << 32 | d2wait_msc_r->sbc_lo;
+    hdl->dri2.cnt.ust = (uint64_t)d2wait_msc_r->ust_hi << 32 | d2wait_msc_r->ust_lo;
+    free(d2swap_r);
+    free(d2wait_sbc_r);
+    free(d2wait_msc_r);
 
     return 0;
 }
