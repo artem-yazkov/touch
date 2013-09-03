@@ -5,6 +5,7 @@
 #include <sys/time.h>
 
 #include <xcb/xcb.h>
+#include <xcb/xfixes.h>
 #include <xcb/xproto.h>
 #include <xcb/dri2.h>
 #include <X11/Xlib.h>
@@ -38,6 +39,7 @@ struct galt_handler_s
         xcb_dri2_get_buffers_cookie_t      buffers_c;
         xcb_dri2_dri2_buffer_t            *buffers, *buffer_front, *buffer_back;
         xcb_drawable_t                     drawable;
+        xcb_xfixes_region_t                region;
 
         struct galt_handler_dri2_cnt_s
         {
@@ -141,6 +143,19 @@ int __dri2_connect(struct galt_handler_dri2_s *dri2, Display *display, int nscre
                 d2version_r->major_version, d2version_r->minor_version);
     }
     free(d2version_r);
+
+
+    xcb_xfixes_query_version_reply_t *xfixes_query;
+    xcb_xfixes_query_version_cookie_t xfixes_query_cookie;
+
+    xcb_generic_error_t *error;
+    xfixes_query_cookie = xcb_xfixes_query_version(dri2->conn, XCB_XFIXES_MAJOR_VERSION, XCB_XFIXES_MINOR_VERSION);
+    xfixes_query = xcb_xfixes_query_version_reply (dri2->conn, xfixes_query_cookie, &error);
+    if (xfixes_query == NULL ||
+         error != NULL || xfixes_query->major_version < 2) {
+        free(error);
+        return -1;
+    }
 
     /* choose right screen */
     xscreen_i = xcb_setup_roots_iterator(xcb_get_setup(dri2->conn));
@@ -355,8 +370,8 @@ int   galt_redraw  (galt_handler_t *hdl)
 
             memset(&dri2_handle, 0, sizeof(dri2_handle));
             dri2_handle.type = DRM_API_HANDLE_TYPE_SHARED;
-            dri2_handle.handle = hdl->dri2.buffer_back->name;
-            dri2_handle.stride = hdl->dri2.buffer_back->pitch;
+            dri2_handle.handle = hdl->dri2.buffer_front->name;
+            dri2_handle.stride = hdl->dri2.buffer_front->pitch;
 
             memset(&tmplt, 0, sizeof(tmplt));
             tmplt.target = PIPE_TEXTURE_2D;
@@ -408,29 +423,51 @@ int   galt_redraw  (galt_handler_t *hdl)
         w_height = hdl->xlib.w_height;
     }
 
-    hdl->dri2.swap_c = xcb_dri2_swap_buffers_unchecked(hdl->dri2.conn,
-                                                       hdl->dri2.drawable,
-                                                       hdl->dri2.cnt.msc >> 32,
-                                                       hdl->dri2.cnt.msc & 0xFFFFFFFF, 0, 0, 0, 0);
-    hdl->dri2.wait_sbc_c = xcb_dri2_wait_sbc_unchecked(hdl->dri2.conn,
-                                                       hdl->dri2.drawable,
-                                                       hdl->dri2.cnt.sbc >> 32,
-                                                       hdl->dri2.cnt.sbc & 0xFFFFFFFF);
-    hdl->dri2.wait_msc_c = xcb_dri2_wait_msc_unchecked(hdl->dri2.conn,
-                                                       hdl->dri2.drawable,
-                                                       hdl->dri2.cnt.msc >> 32,
-                                                       hdl->dri2.cnt.msc & 0xFFFFFFFF + 1, 0, 0, 0, 0);
 
-    xcb_dri2_swap_buffers_reply_t *d2swap_r     = xcb_dri2_swap_buffers_reply(hdl->dri2.conn, hdl->dri2.swap_c, NULL);
-    xcb_dri2_wait_sbc_reply_t     *d2wait_sbc_r = xcb_dri2_wait_sbc_reply(hdl->dri2.conn, hdl->dri2.wait_sbc_c, NULL);
-    xcb_dri2_wait_msc_reply_t     *d2wait_msc_r = xcb_dri2_wait_msc_reply(hdl->dri2.conn, hdl->dri2.wait_msc_c, NULL);
-    hdl->dri2.cnt.msc = (uint64_t)d2wait_msc_r->msc_hi << 32 | d2wait_msc_r->msc_lo;
-    hdl->dri2.cnt.sbc = (uint64_t)d2wait_msc_r->sbc_hi << 32 | d2wait_msc_r->sbc_lo;
-    hdl->dri2.cnt.ust = (uint64_t)d2wait_msc_r->ust_hi << 32 | d2wait_msc_r->ust_lo;
-    free(d2swap_r);
-    free(d2wait_sbc_r);
-    free(d2wait_msc_r);
+    static int frontback = -1;
 
+    if (frontback < 0)
+    {
+        xcb_rectangle_t rect = {0, 0, w_width, w_height};
+
+        hdl->dri2.region = xcb_generate_id(hdl->dri2.conn);
+        xcb_xfixes_create_region(hdl->dri2.conn, hdl->dri2.region, 1, &rect);
+        xcb_dri2_copy_region_cookie_t copy_c;
+        copy_c = xcb_dri2_copy_region_unchecked(hdl->dri2.conn,
+                               hdl->dri2.drawable,
+                               hdl->dri2.region,
+                               XCB_DRI2_ATTACHMENT_BUFFER_FRONT_LEFT,
+                               XCB_DRI2_ATTACHMENT_BUFFER_FAKE_FRONT_LEFT);
+
+        free(xcb_dri2_copy_region_reply(hdl->dri2.conn, copy_c, NULL));
+        xcb_xfixes_destroy_region(hdl->dri2.conn, hdl->dri2.region);
+
+    } else
+    {
+        hdl->dri2.swap_c = xcb_dri2_swap_buffers_unchecked(hdl->dri2.conn,
+                                                           hdl->dri2.drawable,
+                                                           hdl->dri2.cnt.msc >> 32,
+                                                           hdl->dri2.cnt.msc & 0xFFFFFFFF, 0, 0, 0, 0);
+        hdl->dri2.wait_sbc_c = xcb_dri2_wait_sbc_unchecked(hdl->dri2.conn,
+                                                           hdl->dri2.drawable,
+                                                           hdl->dri2.cnt.sbc >> 32,
+                                                           hdl->dri2.cnt.sbc & 0xFFFFFFFF);
+        hdl->dri2.wait_msc_c = xcb_dri2_wait_msc_unchecked(hdl->dri2.conn,
+                                                           hdl->dri2.drawable,
+                                                           hdl->dri2.cnt.msc >> 32,
+                                                           hdl->dri2.cnt.msc & 0xFFFFFFFF + 1, 0, 0, 0, 0);
+
+        xcb_dri2_swap_buffers_reply_t *d2swap_r     = xcb_dri2_swap_buffers_reply(hdl->dri2.conn, hdl->dri2.swap_c, NULL);
+        xcb_dri2_wait_sbc_reply_t     *d2wait_sbc_r = xcb_dri2_wait_sbc_reply(hdl->dri2.conn, hdl->dri2.wait_sbc_c, NULL);
+        xcb_dri2_wait_msc_reply_t     *d2wait_msc_r = xcb_dri2_wait_msc_reply(hdl->dri2.conn, hdl->dri2.wait_msc_c, NULL);
+        hdl->dri2.cnt.msc = (uint64_t)d2wait_msc_r->msc_hi << 32 | d2wait_msc_r->msc_lo;
+        hdl->dri2.cnt.sbc = (uint64_t)d2wait_msc_r->sbc_hi << 32 | d2wait_msc_r->sbc_lo;
+        hdl->dri2.cnt.ust = (uint64_t)d2wait_msc_r->ust_hi << 32 | d2wait_msc_r->ust_lo;
+        free(d2swap_r);
+        free(d2wait_sbc_r);
+        free(d2wait_msc_r);
+    }
+    //frontback = -frontback;
     return 0;
 }
 
@@ -482,8 +519,8 @@ int   galt_open_window(galt_window_t  *window)
         FD_SET(hdl->xlib.socket, &in_fds);
 
         struct timeval tmval;
-        tmval.tv_sec = 10;
-        tmval.tv_usec = 0;
+        tmval.tv_sec  = 10;
+        tmval.tv_usec =  0;
 
         while(XPending(hdl->xlib.display))
         {
