@@ -153,7 +153,7 @@ int main()
     gwin->event_window = twist_draw;
     gwin->udata    = twist;
 
-    gwin->t_delay = 1.0 / 60;
+    gwin->t_delay = 1.0 / 100;
     gwin->event_timer = twist_timer;
 
     galt_open_window(gwin);

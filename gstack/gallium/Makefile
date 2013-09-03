@@ -12,7 +12,7 @@ CFLAGS = \
     -DPIPE_SEARCH_DIR=\"$(mesa_srcdir)/src/gallium/targets/pipe-loader/.libs\"
 
 LDFLAGS = \
-     -lxcb-dri2 -lxcb  -ldrm   -ludev  -ldl -lpthread -lm -lrt                    \
+     -lxcb-dri2 -lxcb-xfixes -lxcb  -ldrm   -ludev  -ldl -lpthread -lm -lrt                    \
      -lX11 -lX11-xcb                                                              \
      $(mesa_srcdir)/src/gallium/auxiliary/pipe-loader/.libs/libpipe_loader.a      \
      $(mesa_srcdir)/src/gallium/auxiliary/.libs/libgallium.a                      \
