@@ -36,7 +36,7 @@ struct galt_handler_s
         xcb_dri2_wait_sbc_cookie_t         wait_sbc_c;
         xcb_dri2_wait_msc_cookie_t         wait_msc_c;
         xcb_dri2_get_buffers_cookie_t      buffers_c;
-        xcb_dri2_dri2_buffer_t            *buffers, *buffer_left;
+        xcb_dri2_dri2_buffer_t            *buffers, *buffer_front, *buffer_back;
         xcb_drawable_t                     drawable;
 
         struct galt_handler_dri2_cnt_s
@@ -77,7 +77,7 @@ struct galt_handler_s
     void    *userdata;
 };
 
-static const uint32_t attachments[1] = { XCB_DRI2_ATTACHMENT_BUFFER_BACK_LEFT };
+static const uint32_t attachments[2] = { XCB_DRI2_ATTACHMENT_BUFFER_FRONT_LEFT, XCB_DRI2_ATTACHMENT_BUFFER_BACK_LEFT };
 
 int __handler_init(galt_handler_t **hdl, galt_window_t  *window)
 {
@@ -202,7 +202,7 @@ int __dri2_attach_drawable(struct galt_handler_dri2_s *dri2, Drawable drawable)
     if (!d2buffers_r)
     {
        xcb_dri2_get_buffers_cookie_t d2buffers_c;
-       d2buffers_c = xcb_dri2_get_buffers_unchecked(dri2->conn, drawable, 1, 1, attachments);
+       d2buffers_c = xcb_dri2_get_buffers_unchecked(dri2->conn, drawable, 2, 2, attachments);
        d2buffers_r = xcb_dri2_get_buffers_reply(dri2->conn, d2buffers_c, NULL);
     }
     if (!d2buffers_r)
@@ -220,17 +220,13 @@ int __dri2_attach_drawable(struct galt_handler_dri2_s *dri2, Drawable drawable)
 
     for (ibuffer = 0; ibuffer < d2buffers_r->count; ibuffer++)
     {
-       if (dri2->buffers[ibuffer].attachment == XCB_DRI2_ATTACHMENT_BUFFER_BACK_LEFT)
-       {
-          dri2->buffer_left = &dri2->buffers[ibuffer];
-          break;
-       }
-    }
-
-    if (ibuffer == d2buffers_r->count)
-    {
-       fprintf(stderr, "can't find back left buffer\n");
-       return -1;
+        if (dri2->buffers[ibuffer].attachment == XCB_DRI2_ATTACHMENT_BUFFER_FAKE_FRONT_LEFT)
+        {
+            dri2->buffer_front = &dri2->buffers[ibuffer];
+        } else if (dri2->buffers[ibuffer].attachment == XCB_DRI2_ATTACHMENT_BUFFER_BACK_LEFT)
+        {
+            dri2->buffer_back = &dri2->buffers[ibuffer];
+        }
     }
 
     xcb_dri2_get_msc_cookie_t  d2msc_c;
@@ -267,7 +263,7 @@ int __gallium_init(struct galt_handler_gallium_s *ga)
 
     ret = pipe_loader_probe(&ga->dev, 1);
     ga->screen = pipe_loader_create_screen(ga->dev, PIPE_SEARCH_DIR);
-    ga->screen->flush_frontbuffer = __dri2_flush_frontbuffer;
+    //ga->screen->flush_frontbuffer = __dri2_flush_frontbuffer;
     ga->pipe = ga->screen->context_create(ga->screen, NULL);
     ga->cso = cso_create_context(ga->pipe);
 
@@ -337,7 +333,7 @@ int   galt_redraw  (galt_handler_t *hdl)
 
     if ((hdl->xlib.w_width != w_width) || (hdl->xlib.w_height != w_height))
     {
-        static struct pipe_resource          *target;
+        static struct pipe_resource          *target0, *target1;
         static struct pipe_framebuffer_state  framebuffer;
         static struct pipe_surface            surf_tmpl;
 
@@ -348,7 +344,8 @@ int   galt_redraw  (galt_handler_t *hdl)
         {
             /* delete previous fb */
             pipe_surface_release(hdl->gallium.pipe, &framebuffer.cbufs[0]);
-            pipe_resource_reference(&target, NULL);
+            pipe_resource_reference(&target0, NULL);
+            pipe_resource_reference(&target1, NULL);
         }
 
         /* render target texture */
@@ -358,8 +355,8 @@ int   galt_redraw  (galt_handler_t *hdl)
 
             memset(&dri2_handle, 0, sizeof(dri2_handle));
             dri2_handle.type = DRM_API_HANDLE_TYPE_SHARED;
-            dri2_handle.handle = hdl->dri2.buffer_left->name;
-            dri2_handle.stride = hdl->dri2.buffer_left->pitch;
+            dri2_handle.handle = hdl->dri2.buffer_back->name;
+            dri2_handle.stride = hdl->dri2.buffer_back->pitch;
 
             memset(&tmplt, 0, sizeof(tmplt));
             tmplt.target = PIPE_TEXTURE_2D;
@@ -371,7 +368,13 @@ int   galt_redraw  (galt_handler_t *hdl)
             tmplt.last_level = 0;
             tmplt.bind = PIPE_BIND_RENDER_TARGET;
 
-            target = hdl->gallium.screen->resource_from_handle(hdl->gallium.screen, &tmplt, &dri2_handle);
+            target0 = hdl->gallium.screen->resource_from_handle(hdl->gallium.screen, &tmplt, &dri2_handle);
+
+            dri2_handle.handle = hdl->dri2.buffer_back->name;
+            dri2_handle.stride = hdl->dri2.buffer_back->pitch;
+
+            target1 = hdl->gallium.screen->resource_from_handle(hdl->gallium.screen, &tmplt, &dri2_handle);
+
         }
 
         surf_tmpl.format = PIPE_FORMAT_B8G8R8A8_UNORM;
@@ -383,8 +386,9 @@ int   galt_redraw  (galt_handler_t *hdl)
         memset(&framebuffer, 0, sizeof(framebuffer));
         framebuffer.width    = hdl->xlib.w_width;
         framebuffer.height   = hdl->xlib.w_height;
-        framebuffer.nr_cbufs = 1;
-        framebuffer.cbufs[0] = hdl->gallium.pipe->create_surface(hdl->gallium.pipe, target, &surf_tmpl);
+        framebuffer.nr_cbufs = 2;
+        framebuffer.cbufs[0] = hdl->gallium.pipe->create_surface(hdl->gallium.pipe, target0, &surf_tmpl);
+        framebuffer.cbufs[1] = hdl->gallium.pipe->create_surface(hdl->gallium.pipe, target1, &surf_tmpl);
 
         /* set the render target */
         cso_set_framebuffer(hdl->gallium.cso, &framebuffer);
@@ -415,7 +419,7 @@ int   galt_redraw  (galt_handler_t *hdl)
     hdl->dri2.wait_msc_c = xcb_dri2_wait_msc_unchecked(hdl->dri2.conn,
                                                        hdl->dri2.drawable,
                                                        hdl->dri2.cnt.msc >> 32,
-                                                       hdl->dri2.cnt.msc & 0xFFFFFFFF, 0, 0, 0, 0);
+                                                       hdl->dri2.cnt.msc & 0xFFFFFFFF + 1, 0, 0, 0, 0);
 
     xcb_dri2_swap_buffers_reply_t *d2swap_r     = xcb_dri2_swap_buffers_reply(hdl->dri2.conn, hdl->dri2.swap_c, NULL);
     xcb_dri2_wait_sbc_reply_t     *d2wait_sbc_r = xcb_dri2_wait_sbc_reply(hdl->dri2.conn, hdl->dri2.wait_sbc_c, NULL);
